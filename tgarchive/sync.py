@@ -7,11 +7,10 @@ import tempfile
 import shutil
 import time
 
-from PIL import Image
 from telethon import TelegramClient, errors, sync
 import telethon.tl.types
 
-from .db import User, Message, Media
+from .db import Message, Media
 
 
 class Sync:
@@ -60,9 +59,6 @@ class Sync:
                     continue
 
                 has = True
-
-                # Insert the records into DB.
-                self.db.insert_user(m.user)
 
                 if m.media:
                     self.db.insert_media(m.media)
@@ -161,7 +157,7 @@ class Sync:
                     if len(alt) > 0:
                         sticker = alt[0]
                 elif isinstance(m.media, telethon.tl.types.MessageMediaPoll):
-                    med = self._make_poll(m)
+                    med = None
                 else:
                     med = self._get_media(m)
 
@@ -180,7 +176,7 @@ class Sync:
                 edit_date=m.edit_date,
                 content=sticker if sticker else m.raw_text,
                 reply_to=m.reply_to_msg_id if m.reply_to and m.reply_to.reply_to_msg_id else None,
-                user=self._get_user(m.sender),
+                user=None,
                 media=med
             )
 
@@ -200,87 +196,11 @@ class Sync:
             logging.info(
                 "flood waited: have to wait {} seconds".format(e.seconds))
 
-    def _get_user(self, u) -> User:
-        tags = []
-        is_normal_user = isinstance(u, telethon.tl.types.User)
-
-        if isinstance(u, telethon.tl.types.ChannelForbidden):
-            return User(
-                id=u.id,
-                username=u.title,
-                first_name=None,
-                last_name=None,
-                tags=tags,
-                avatar=None
-            )
-
-        if is_normal_user:
-            if u.bot:
-                tags.append("bot")
-
-        if u.scam:
-            tags.append("scam")
-
-        if u.fake:
-            tags.append("fake")
-
-        # Download sender's profile photo if it's not already cached.
-        avatar = None
-        if self.config["download_avatars"]:
-            try:
-                fname = self._download_avatar(u)
-                avatar = fname
-            except Exception as e:
-                logging.error(
-                    "error downloading avatar: #{}: {}".format(u.id, e))
-
-        return User(
-            id=u.id,
-            username=u.username if u.username else str(u.id),
-            first_name=u.first_name if is_normal_user else None,
-            last_name=u.last_name if is_normal_user else None,
-            tags=tags,
-            avatar=avatar
-        )
-
-    def _make_poll(self, msg):
-        if not msg.media.results or not msg.media.results.results:
-            return None
-
-        options = [{"label": a.text, "count": 0, "correct": False}
-                   for a in msg.media.poll.answers]
-
-        total = msg.media.results.total_voters
-        if msg.media.results.results:
-            for i, r in enumerate(msg.media.results.results):
-                options[i]["count"] = r.voters
-                options[i]["percent"] = r.voters / \
-                    total * 100 if total > 0 else 0
-                options[i]["correct"] = r.correct
-
-        return Media(
-            id=msg.id,
-            type="poll",
-            url=None,
-            title=msg.media.poll.question,
-            description=json.dumps(options),
-            thumb=None
-        )
-
     def _get_media(self, msg):
         if isinstance(msg.media, telethon.tl.types.MessageMediaWebPage) and \
                 not isinstance(msg.media.webpage, telethon.tl.types.WebPageEmpty):
-            return Media(
-                id=msg.id,
-                type="webpage",
-                url=msg.media.webpage.url,
-                title=msg.media.webpage.title,
-                description=msg.media.webpage.description if msg.media.webpage.description else None,
-                thumb=None
-            )
-        elif isinstance(msg.media, telethon.tl.types.MessageMediaPhoto) or \
-                isinstance(msg.media, telethon.tl.types.MessageMediaDocument) or \
-                isinstance(msg.media, telethon.tl.types.MessageMediaContact):
+            return None
+        elif isinstance(msg.media, telethon.tl.types.MessageMediaDocument):
             if self.config["download_media"]:
                 # Filter by extensions?
                 if len(self.config["media_mime_types"]) > 0:
@@ -321,12 +241,6 @@ class Sync:
 
         # If it's a photo, download the thumbnail.
         tname = None
-        if isinstance(msg.media, telethon.tl.types.MessageMediaPhoto):
-            tpath = self.client.download_media(
-                msg, file=tempfile.gettempdir(), thumb=1)
-            tname = "thumb_{}.{}".format(
-                msg.id, self._get_file_ext(os.path.basename(tpath)))
-            shutil.move(tpath, os.path.join(self.config["media_dir"], tname))
 
         return basename, newname, tname
 
@@ -337,28 +251,6 @@ class Sync:
                 return e
 
         return ".file"
-
-    def _download_avatar(self, user):
-        fname = "avatar_{}.jpg".format(user.id)
-        fpath = os.path.join(self.config["media_dir"], fname)
-
-        if os.path.exists(fpath):
-            return fname
-
-        logging.info("downloading avatar #{}".format(user.id))
-
-        # Download the file into a container, resize it, and then write to disk.
-        b = BytesIO()
-        profile_photo = self.client.download_profile_photo(user, file=b)
-        if profile_photo is None:
-            logging.info("user has no avatar #{}".format(user.id))
-            return None
-
-        im = Image.open(b)
-        im.thumbnail(self.config["avatar_size"], Image.LANCZOS)
-        im.save(fpath, "JPEG")
-
-        return fname
 
     def _get_group_id(self, group):
         """
