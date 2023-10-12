@@ -59,6 +59,8 @@ class Sync:
                     continue
                 if m.type != "message":
                     continue
+                if not m.media:
+                    continue
 
                 has = True
 
