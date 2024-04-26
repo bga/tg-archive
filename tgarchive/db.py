@@ -210,7 +210,8 @@ class DB:
                          "%Y-%m-%d %H:%M:%S") if m.edit_date else None,
                      m.content,
                      m.reply_to,
-                     m.user.id,
+                     # m.user.id,
+                     0,
                      m.media.id if m.media else None)
                     )
 

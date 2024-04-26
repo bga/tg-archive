@@ -3,15 +3,20 @@ from sys import exit
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import shutil
 import time
+import random
+import threading
+import re
 
 from telethon import TelegramClient, errors, sync
 import telethon.tl.types
 
-from .db import Message, Media
+from  tgarchive.db import Message, Media
 
+Config_mp3Quolity = 7
 
 class Sync:
     """
@@ -20,6 +25,9 @@ class Sync:
     """
     config = {}
     db = None
+    
+    lazyMedia = Media(-1, 'lazy-media', '', '', '', '')
+    #  lazyMedia = "lazy-media"
 
     def __init__(self, config, session_file, db):
         self.config = config
@@ -50,6 +58,7 @@ class Sync:
         group_id = self._get_group_id(self.config["group"])
 
         n = 0
+        isDl = 10
         while True:
             has = False
             for m in self._get_messages(group_id,
@@ -57,16 +66,38 @@ class Sync:
                                         ids=ids):
                 if not m:
                     continue
+                #  print(m)
                 if m.type != "message":
                     continue
+                if m.content != '':
+                    # print("found title")
+                    isDl = 10
                 if not m.media:
                     continue
 
                 has = True
 
-                if m.media:
+                if 0 < isDl and random.randint(0, 5) == 1 and m.media.url == "lazy-media":
+                # if 0 < isDl and m.media.url == "lazy-media":
+                    #  print("dl media!")
+                    logging.info("downloading media #{}".format(m.id))
+                    try:
+                        basename, fname, thumb = self._download_media(m.media.thumb)
+                        m = m._replace(media = Media(
+                            id=m.id,
+                            type="photo",
+                            url=fname,
+                            title=basename,
+                            description=None,
+                            thumb=thumb
+                        ))
+                        isDl -= 1
+                    finally:
+                        pass
+                    
+                if m.media and m.media.url != "lazy-media":
                     self.db.insert_media(m.media)
-
+                
                 self.db.insert_message(m)
 
                 last_date = m.date
@@ -164,6 +195,7 @@ class Sync:
                     med = None
                 else:
                     med = self._get_media(m)
+                    # med = self.lazyMedia
 
             # Message.
             typ = "message"
@@ -214,9 +246,11 @@ class Sync:
                                 "skipping media #{} / {}".format(msg.file.name, msg.file.mime_type))
                             return
 
-                logging.info("downloading media #{}".format(msg.id))
+                #  logging.info("downloading media #{}".format(msg.id))
                 try:
-                    basename, fname, thumb = self._download_media(msg)
+                    # basename, fname, thumb = self._download_media(msg)
+                    #  basename, fname, thumb = ["","lazy-media", None]
+                    basename, fname, thumb = ["", "lazy-media", msg]
                     return Media(
                         id=msg.id,
                         type="photo",
@@ -229,22 +263,90 @@ class Sync:
                     logging.error(
                         "error downloading media: #{}: {}".format(msg.id, e))
 
+    _extractDigitsRe = re.compile('^(\\d+)')
+    # [https://stackoverflow.com/a/34193591]
+    _unixPathBlacklistChars = re.compile('[' + re.escape('\\/\0*`|;"\':') + ']')
+    _idPadDigitsCount = 6
+    def _idToStr(self, msgId):
+        return str(msgId).zfill(self._idPadDigitsCount)
+    def _escapeFileName(self, f):
+      # [https://stackoverflow.com/a/34193591]
+        if f.startswith("-"):
+            f = "_" + f
+        return re.sub(self._unixPathBlacklistChars, '_', f)
+    def _format_media_name(self, fpath, msgId):
+        name = self._idToStr(msgId) + ". " + os.path.basename(fpath)
+        metadata = None
+        with subprocess.Popen(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries", "format", fpath], stdout=subprocess.PIPE) as proc:
+            metadata = json.loads(proc.stdout.read())
+            # print(metadata)
+            format_data = metadata.get('format', None)
+            if format_data is None:
+                return name
+            tags = format_data.get('tags', None)
+            if tags is None:
+                return name
+            validKeysCount = 0
+            for i in tags.keys():
+                if i in ['artist', 'album', 'title']:
+                    validKeysCount += 1
+            if validKeysCount != 3:
+                return name
+            track = "00"
+            trackMatch = self._extractDigitsRe.match(tags.get('track', "00"))
+            if not trackMatch is None: 
+                track = trackMatch.group(0).zfill(2)
+            name = self._idToStr(msgId) + ". " + tags.get('artist', "Unknown").strip() + " - " + tags.get('date', "0000").strip() + " - " + tags.get('album', "Unknown").strip() + " - "  + track.strip() + " - " + tags.get('title', "").strip()
+        return name
     def _download_media(self, msg) -> [str, str, str]:
         """
         Download a media / file attached to a message and return its original
         filename, sanitized name on disk, and the thumbnail (if any). 
         """
-        # Download the media to the temp dir and copy it back as
-        # there does not seem to be a way to get the canonical
-        # filename before the download.
-        fpath = self.client.download_media(msg, file=tempfile.gettempdir())
-        basename = os.path.basename(fpath)
-
-        newname = "{}.{}".format(msg.id, self._get_file_ext(basename))
-        shutil.move(fpath, os.path.join(self.config["media_dir"], newname))
-
-        # If it's a photo, download the thumbnail.
+        newname = "{}".format(msg.id).zfill(6)
+        dirnewname_byId = os.path.join(self.config["media_dir"], "by-id", self._idToStr(msg.id))
+        #  dirnewname_byName = os.path.join(self.config["media_dir"], "by-name", newname)
+        basename = ''
         tname = None
+
+        if not os.path.isfile(dirnewname_byId):
+            # Download the media to the temp dir and copy it back as
+            # there does not seem to be a way to get the canonical
+            # filename before the download.
+            fpath = self.client.download_media(msg, file=tempfile.gettempdir())
+            basename = os.path.basename(fpath)
+            # dirnewname_byName = os.path.join(self.config["media_dir"], "by-name", basename + ".m4a")
+            dirnewname_byName_basename = os.path.join(self.config["media_dir"], "by-name", self._escapeFileName(self._format_media_name(fpath, msg.id)))
+            dirnewname_byName = dirnewname_byName_basename + ".m4a"
+            dirnewname_byName_part = dirnewname_byName_basename + ".part.m4a"
+            
+            #  fpath = fpath_tg + ".mp3"
+            def thread():
+                isFail = False
+                # p = subprocess.Popen(["ffmpeg", "-y", "-vn", "-i", fpath, "-codec:a", "libmp3lame", "-qscale:a", str(Config_mp3Quolity), dirnewname_byName], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                # p = subprocess.Popen(["ffmpeg", "-y", "-vn", "-i", fpath, "-codec:a", "libmp3lame", "-qscale:a", str(Config_mp3Quolity), dirnewname_byName])
+                # p = subprocess.Popen(["ffmpeg", "-y", "-vn", "-i", fpath, '-c:a', 'libfdk_aac', '-vbr', '3', '-movflags', '+faststart', dirnewname_byName], stdout=subprocess.DEVNULL)
+
+                try:
+                    p = subprocess.Popen(["ffmpeg", "-y", "-vn", "-hide_banner", "-i", fpath, '-c:a', 'libfdk_aac', '-vbr', '3', '-afterburner', '1', '-profile:a', 'aac_he', dirnewname_byName_part], stdout=subprocess.DEVNULL)
+                    p.wait()
+                except:
+                    isFail = True
+                os.remove(fpath)
+                if isFail:
+                    # TODO report to some log
+                    os.remove(dirnewname_byName_part)
+                else:
+                    os.rename(dirnewname_byName_part, dirnewname_byName)
+            x = threading.Thread(target=thread)
+            x.start()
+
+
+            #  newname = "{}.{}".format(msg.id, self._get_file_ext(basename))
+            #  shutil.move(fpath, dirnewname_byId)
+            #  os.symlink(dirnewname_byId, os.path.join('..', 'by-name', basename))
+            #  os.symlink(os.path.relpath(dirnewname_byId, os.path.join(self.config["media_dir"], "by-name")), os.path.join('by-name', basename))
+            os.symlink(os.path.relpath(dirnewname_byName, os.path.join(self.config["media_dir"], "by-id")), dirnewname_byId)
 
         return basename, newname, tname
 

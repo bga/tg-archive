@@ -5,7 +5,10 @@ import shutil
 import sys
 import yaml
 
+# sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+
 from .db import DB
+#  from tgarchive.db import DB
 
 __version__ = "1.1.3"
 
@@ -161,3 +164,6 @@ def main():
         b.build()
 
         logging.info("published to directory '{}'".format(config["publish_dir"]))
+
+if __name__ == "__main__":
+  main()
