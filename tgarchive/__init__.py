@@ -82,6 +82,8 @@ def main():
                    dest="id", help="sync (or update) messages for given ids")
     s.add_argument("-from-id", "--from-id", action="store", type=int,
                    dest="from_id", help="sync (or update) messages from this id to the latest")
+    s.add_argument("-random-factor", "--random-factor", action="store", type=int,
+                   dest="random_factor", help="randomly get one of each N medias")
 
     b = p.add_argument_group("build")
     b.add_argument("-b", "--build", action="store_true",
@@ -140,9 +142,10 @@ def main():
         logging.info("starting Telegram sync (batch_size={}, limit={}, wait={}, mode={})".format(
             cfg["fetch_batch_size"], cfg["fetch_limit"], cfg["fetch_wait"], mode
         ))
+        logging.info("random_factor={}".format(args.random_factor))
         try:
             s = Sync(cfg, args.session, DB(args.data))
-            s.sync(args.id, args.from_id)
+            s.sync(args.id, args.from_id, args.random_factor)
         except KeyboardInterrupt as e:
             logging.info("sync cancelled manually")
             if cfg.get("use_takeout", False):

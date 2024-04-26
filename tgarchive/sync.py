@@ -38,7 +38,7 @@ class Sync:
         if not os.path.exists(self.config["media_dir"]):
             os.mkdir(self.config["media_dir"])
 
-    def sync(self, ids=None, from_id=None):
+    def sync(self, ids=None, from_id=None, randomFactor=None):
         """
         Sync syncs messages from Telegram from the last synced message
         into the local SQLite DB.
@@ -77,7 +77,7 @@ class Sync:
 
                 has = True
 
-                if 0 < isDl and random.randint(0, 5) == 1 and m.media.url == "lazy-media":
+                if 0 < isDl and (randomFactor != None and random.randint(0, randomFactor) == 1) and m.media.url == "lazy-media":
                 # if 0 < isDl and m.media.url == "lazy-media":
                     #  print("dl media!")
                     logging.info("downloading media #{}".format(m.id))
